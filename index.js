@@ -4,6 +4,7 @@ const cookieParser = require("cookie-parser")
 const jwt = require("jsonwebtoken")
 const dotenv = require("dotenv").config()
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY)
 const app = express()
 const port = process.env.PORT || 5000
 
@@ -37,7 +38,7 @@ async function run() {
 
     const panjabiCollection = client.db("tusharDB").collection("panjabi");
     const userCollection = client.db("tusharDB").collection("users");
-
+    const paymentCollection = client.db("tusharDB").collection("payments");
 
 
 
@@ -80,35 +81,33 @@ const logger = async(req,res,next) =>{
   console.log("log: info ",req.method , req.url)
   next()
 }
-
-const verifyToken = async(req,res, next) =>{
-  console.log("inside verify token",req.headers.authorization)
-  if(!req.headers.authorization){
-    return res.status(401).send({message: "unauthorized access"})
-  }
-
-  const token = req.headers.authorization.split(' ')[1]
-  console.log(token)
-  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
-    if(err){
-      return res.status(401).send({message: "unauthorized access"})
+    // middlewares 
+    const verifyToken = (req, res, next) => {
+      console.log('inside verify token', req.headers.authorization);
+      if (!req.headers.authorization) {
+        return res.status(401).send({ message: 'unauthorized access' });
+      }
+      const token = req.headers.authorization.split(' ')[1];
+      jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (err) {
+          return res.status(401).send({ message: 'unauthorized access' })
+        }
+        req.decoded = decoded;
+        next();
+      })
     }
-    req.decoded = decoded
-    next()
-  })
-}
- // use verify admin after verifyToken
- const verifyAdmin = async (req, res, next) => {
-  const email = req.decoded.email;
-  const query = { email: email };
-  const user = await userCollection.findOne(query);
-  const isAdmin = user?.role === 'admin';
-  console.log(isAdmin)
-  if (!isAdmin) {
-    return res.status(403).send({ message: 'forbidden access' });
-  }
-  next();
-}
+
+    // use verify admin after verifyToken
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await userCollection.findOne(query);
+      const isAdmin = user?.role === 'admin';
+      if (!isAdmin) {
+        return res.status(403).send({ message: 'forbidden access' });
+      }
+      next();
+    }
 
 
 
@@ -221,20 +220,6 @@ app.get("/allProducts", async(req,res)=>{
   res.send(result)
 })
 
-//read all my products from My List page
-// app.get("/products/:email", async(req,res)=>{
-//     console.log(req.query.email)
-//     const email = req.params.email
-//     // let query = {}
-//     const query = {email: email}
-//     console.log(req)
-//     const options = {
-//       projection: { product_type: 1, image: 1, price:1 },
-//     };
-  
-//     const result = await  panjabiCollection.find(query,options).toArray()
-//     res.send(result)
-// })
 
 
 
@@ -280,6 +265,61 @@ app.get("/allProducts", async(req,res)=>{
         const result = await panjabiCollection.deleteOne(query)
         res.send(result)
       })
+
+
+
+
+    // payment intent
+    app.post('/create-payment-intent', async (req, res) => {
+      const { price } = req.body;
+      const amount = parseInt(price * 100);
+      console.log(amount, 'amount inside the intent')
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: 'usd',
+        payment_method_types: ['card']
+      });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+    });
+
+
+    app.get('/payments/:email', verifyToken, async (req, res) => {
+      const query = { email: req.params.email }
+      if (req.params.email !== req.decoded.email) {
+        return res.status(403).send({ message: 'forbidden access' });
+      }
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    })
+
+    app.post('/payments', async (req, res) => {
+      const payment = req.body;
+      const paymentResult = await paymentCollection.insertOne(payment);
+
+      //  carefully delete each item from the cart
+      // console.log('payment info', payment);
+      // const query = {
+      //   _id: {
+      //     $in: payment.cartIds.map(id => new ObjectId(id))
+      //   }
+      // };
+
+      // const deleteResult = await cartCollection.deleteMany(query);
+
+      res.send({ paymentResult});
+      //paymentResult , deleteResult 
+    })
+
+
+
+
+
+
+
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
